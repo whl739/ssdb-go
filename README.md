@@ -1,4 +1,3 @@
-ssdb-go
-=======
+#ssdb-go
 
-go client for ssdb
+go client for [SSDB](https://github.com/ideawu/ssdb/)
