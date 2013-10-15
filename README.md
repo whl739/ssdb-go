@@ -28,7 +28,6 @@ go client for [SSDB](https://github.com/ideawu/ssdb/)
 
     
     //pipeline
-
     pipe = db.Pipeline()
     pipe.Set("test", "123")
     pipe.Incr("test", 123)
