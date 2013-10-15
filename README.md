@@ -27,11 +27,11 @@ go client for [SSDB](https://github.com/ideawu/ssdb/)
     fmt.Println(ret, err)
 
     
-    //pipeline
-    pipe = db.Pipeline()
-    pipe.Set("test", "123")
-    pipe.Incr("test", 123)
-    pipe.Get("test")
-    ret, err := pipe.Exec()
+    //batch mode
+    db.Batch()
+    db.Set("test", "123")
+    db.Incr("test", 123)
+    db.Get("test")
+    ret, err := db.Exec()
 
 
