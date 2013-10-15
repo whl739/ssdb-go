@@ -26,26 +26,6 @@ func Conn(host string, port int) *SSDB {
 	return &SSDB{con, err, false, [][]byte{}, []byte{}}
 }
 
-func (ssdb *SSDB) send() {
-	for _, v := range ssdb.cmds {
-		ssdb.con.Write(v)
-	}
-}
-
-func (ssdb *SSDB) request(args ...string) {
-	data := bytes.NewBuffer(nil)
-	for _, arg := range args {
-		p := strconv.Itoa(len(arg))
-		data.WriteString(p)
-		data.WriteByte('\n')
-		data.WriteString(arg)
-		data.WriteByte('\n')
-	}
-	data.WriteByte('\n')
-
-	ssdb.cmds = append(ssdb.cmds, data.Bytes())
-}
-
 func parse(result []byte) []string {
 	sl := strings.Split(string(result), "\n")
 	ret := []string{}
@@ -80,7 +60,7 @@ func (ssdb *SSDB) recv_one() []string {
 	return nil
 }
 
-func (ssdb *SSDB) recieve() []string {
+func (ssdb *SSDB) recv() []string {
 	for {
 		ret := ssdb.recv_one()
 		if ret == nil {
@@ -97,6 +77,169 @@ func (ssdb *SSDB) recieve() []string {
 	return nil
 }
 
+func (ssdb *SSDB) send_req(data []byte) error {
+	_, err := ssdb.con.Write(data)
+	return err
+}
+
+func (ssdb *SSDB) request(cmd string, args ...string) (interface{}, error) {
+	data := bytes.NewBuffer(nil)
+	p := strconv.Itoa(len(cmd))
+	data.WriteString(p)
+	for _, arg := range args {
+		p = strconv.Itoa(len(arg))
+		data.WriteString(p)
+		data.WriteByte('\n')
+		data.WriteString(arg)
+		data.WriteByte('\n')
+	}
+	data.WriteByte('\n')
+
+	if ssdb.batch_mode {
+		ssdb.cmds = append(ssdb.cmds, data.Bytes())
+		return nil, nil
+	}
+
+	err := ssdb.send_req(data.Bytes())
+	if err != nil {
+		return nil, SsdbError(err.Error())
+	}
+
+	return ssdb.recv_resp(cmd)
+}
+
+func (ssdb *SSDB) recv_resp(cmd string) (interface{}, error) {
+	resp := ssdb.recv()
+
+	switch cmd {
+	case "set":
+		fallthrough
+	case "zset":
+		fallthrough
+	case "hset":
+		fallthrough
+	case "del":
+		fallthrough
+	case "zdel":
+		fallthrough
+	case "hdel":
+		fallthrough
+	case "hsize":
+		fallthrough
+	case "zsize":
+		fallthrough
+	case "exists":
+		fallthrough
+	case "hexists":
+		fallthrough
+	case "zexists":
+		fallthrough
+	case "multi_set":
+		fallthrough
+	case "multi_del":
+		fallthrough
+	case "multi_hset":
+		fallthrough
+	case "multi_hde":
+		fallthrough
+	case "multi_zset":
+		fallthrough
+	case "multi_zdel":
+		fallthrough
+	case "incr":
+		fallthrough
+	case "decr":
+		fallthrough
+	case "zincr":
+		fallthrough
+	case "zdecr":
+		fallthrough
+	case "hincr":
+		fallthrough
+	case "hdecr":
+		fallthrough
+	case "zget":
+		if resp[0] == "ok" {
+			return nil, nil
+		}
+		return nil, SsdbError(cmd + " failed")
+
+	case "get":
+		fallthrough
+	case "hget":
+		if resp[0] != "ok" {
+			return nil, SsdbError(resp[1])
+		}
+
+		if len(resp) == 2 {
+			return resp[1], nil
+		} else {
+			return nil, SsdbError("Invalid response")
+		}
+
+	case "keys":
+		fallthrough
+	case "zkeys":
+		fallthrough
+	case "hkeys":
+		fallthrough
+	case "hlist":
+		fallthrough
+	case "zlist":
+		if resp[0] != "ok" {
+			return nil, SsdbError(cmd + " failed")
+		}
+
+		data := []string{}
+		for i := 1; i < len(resp); i++ {
+			data = append(data, resp[i])
+		}
+		return data, nil
+
+	case "scan":
+		fallthrough
+	case "rscan":
+		fallthrough
+	case "zscan":
+		fallthrough
+	case "zrscan":
+		fallthrough
+	case "hscan":
+		fallthrough
+	case "hrscan":
+		fallthrough
+	case "multi_hsize":
+		fallthrough
+	case "multi_zsize":
+		fallthrough
+	case "multi_get":
+		fallthrough
+	case "multi_hget":
+		fallthrough
+	case "multi_zget":
+		fallthrough
+	case "multi_exists":
+		fallthrough
+	case "multi_hexists":
+		fallthrough
+	case "multi_zexists":
+		if resp[0] != "ok" || len(resp)%2 != 1 {
+			return nil, SsdbError(cmd + " failed")
+		}
+
+		data := []map[string]string{}
+		for i := 1; i < len(resp); i += 2 {
+			m := map[string]string{resp[i]: resp[i+1]}
+			data = append(data, m)
+		}
+		return data, nil
+	default:
+		return resp[0], nil
+	}
+
+	return nil, SsdbError("Unknown command: " + cmd)
+}
+
 func (ssdb *SSDB) Close() error {
 	return ssdb.con.Close()
 }
@@ -105,13 +248,17 @@ func (ssdb *SSDB) Batch() {
 	ssdb.batch_mode = true
 }
 
-func (ssdb *SSDB) Exec() ([][]string, error) {
-	ssdb.send()
+func (ssdb *SSDB) Exec() ([]interface{}, error) {
 
-	ret := [][]string{}
+	for _, v := range ssdb.cmds {
+		ssdb.send_req(v)
+	}
 
-	for i := 0; i < len(ssdb.cmds); i++ {
-		ret = append(ret, ssdb.recieve())
+	ret := []interface{}{}
+
+	for _, v := range ssdb.cmds {
+		resp, _ := ssdb.recv_resp(string(v))
+		ret = append(ret, resp)
 	}
 
 	ssdb.cmds = ssdb.cmds[:0]
@@ -121,137 +268,52 @@ func (ssdb *SSDB) Exec() ([][]string, error) {
 }
 
 func (ssdb *SSDB) Set(key, value string) error {
-	ssdb.request("set", key, value)
+	_, err := ssdb.request("set", key, value)
 
-	if ssdb.batch_mode {
-		return nil
-	}
-
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return SsdbError("set failed")
-	}
-
-	return nil
+	return err
 }
 
 func (ssdb *SSDB) Get(key string) (string, error) {
-	ssdb.request("get", key)
-
-	if ssdb.batch_mode {
-		return "", nil
+	ret, err := ssdb.request("get", key)
+	if ret != nil {
+		return ret.(string), err
 	}
 
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return "", SsdbError("incr failed")
-	}
-
-	return ret[1], nil
+	return "", err
 }
 
 func (ssdb *SSDB) Del(key string) error {
-	ssdb.request("del", key)
+	_, err := ssdb.request("del", key)
 
-	if ssdb.batch_mode {
-		return nil
-	}
-
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return SsdbError("del failed")
-	}
-
-	return nil
+	return err
 }
 
 func (ssdb *SSDB) Incr(key string, increment int) error {
-	ssdb.request("incr", key, strconv.Itoa(increment))
+	_, err := ssdb.request("incr", key, strconv.Itoa(increment))
 
-	if ssdb.batch_mode {
-		return nil
-	}
-
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return SsdbError("incr failed")
-	}
-
-	return nil
+	return err
 }
 
 func (ssdb *SSDB) Hincr(name string, key string, increment int) error {
-	ssdb.request("hincr", name, key, strconv.Itoa(increment))
+	_, err := ssdb.request("hincr", name, key, strconv.Itoa(increment))
 
-	if ssdb.batch_mode {
-		return nil
-	}
-
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return SsdbError("hincr failed")
-	}
-
-	return nil
+	return err
 }
 
 func (ssdb *SSDB) Zincr(name string, key string, increment int) error {
-	ssdb.request("zincr", name, key, strconv.Itoa(increment))
+	_, err := ssdb.request("zincr", name, key, strconv.Itoa(increment))
 
-	if ssdb.batch_mode {
-		return nil
-	}
-
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return SsdbError("zincr failed")
-	}
-
-	return nil
+	return err
 }
 
 func (ssdb *SSDB) Zrscan(name string, key_start string, score_start int,
-	score_end int, limit int) (map[string]int, error) {
-	ssdb.request("zrscan", name, key_start, strconv.Itoa(score_start),
+	score_end int, limit int) ([]map[string]string, error) {
+	ret, err := ssdb.request("zrscan", name, key_start, strconv.Itoa(score_start),
 		strconv.Itoa(score_end), strconv.Itoa(limit))
 
-	if ssdb.batch_mode {
-		return nil, nil
+	if ret != nil {
+		return ret.([]map[string]string), err
 	}
 
-	ssdb.send()
-	ret := ssdb.recieve()
-
-	if !strings.EqualFold(ret[0], "ok") {
-		return nil, SsdbError("zrscan failed")
-	}
-
-	rmap := make(map[string]int)
-
-	retlen := len(ret)
-	if retlen%2 == 0 {
-		return nil, SsdbError("invalid zrscan response")
-	}
-
-	for i := 1; i < retlen; i += 2 {
-		if strings.EqualFold(ret[i], "\n") {
-			break
-		}
-
-		rmap[ret[i]], _ = strconv.Atoi(ret[i+1])
-	}
-
-	return rmap, nil
+	return nil, nil
 }
