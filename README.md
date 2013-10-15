@@ -4,11 +4,10 @@
 
 go client for [SSDB](https://github.com/ideawu/ssdb/)
 
+
 ## Usage
 
     import "ssdb"
-    import "fmt"
-    import "os"
 
     db := ssdb.Conn("127.0.0.1", 8888)
     defer db.Close()
@@ -26,3 +25,11 @@ go client for [SSDB](https://github.com/ideawu/ssdb/)
 
     ret, err = db.Get("test")
     fmt.Println(ret, err)
+    
+    pipe = db.Pipeline()
+    pipe.Set("test", "123")
+    pipe.Incr("test", 123)
+    pipe.Get("test")
+    ret, err := pipe.Exec()
+
+
