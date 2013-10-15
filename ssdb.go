@@ -3,7 +3,7 @@ package ssdb
 import (
     "bytes"
     "errors"
-    "fmt"
+    //"fmt"
     "net"
     "strconv"
     "strings"
@@ -14,6 +14,12 @@ type SSDB struct {
     Err error
 }
 
+type Pipe struct {
+    ssdb     *SSDB
+    cmds     []string
+    recv_buf []byte
+}
+
 func Conn(host string, port int) *SSDB {
     remote := host + ":" + strconv.Itoa(port)
     con, err := net.Dial("tcp", remote)
@@ -22,6 +28,106 @@ func Conn(host string, port int) *SSDB {
 
 func (ssdb *SSDB) Close() error {
     return ssdb.con.Close()
+}
+
+func (ssdb *SSDB) Pipeline() *Pipe {
+    cmds := []string{}
+    recv_buf := []byte{}
+    return &Pipe{ssdb, cmds, recv_buf}
+}
+
+func (pipe *Pipe) request(args ...string) {
+    data := bytes.NewBuffer(nil)
+    for _, arg := range args {
+        p := strconv.Itoa(len(arg))
+        data.WriteString(p)
+        data.WriteByte('\n')
+        data.WriteString(arg)
+        data.WriteByte('\n')
+    }
+    data.WriteByte('\n')
+    pipe.cmds = append(pipe.cmds, data.String())
+}
+
+func (pipe *Pipe) Set(key, value string) {
+    pipe.request("set", key, value)
+}
+
+func (pipe *Pipe) Get(key string) {
+    pipe.request("get", key)
+}
+
+func (pipe *Pipe) Incr(key string, increment int) {
+    pipe.request("incr", key, strconv.Itoa(increment))
+}
+
+func (pipe *Pipe) Hincr(name string, key string, increment int) {
+    pipe.request("hincr", name, key, strconv.Itoa(increment))
+}
+
+func (pipe *Pipe) Zincr(name string, key string, increment int) {
+    pipe.request("zincr", name, key, strconv.Itoa(increment))
+}
+
+func (pipe *Pipe) Zrscan(name string) {
+    pipe.request("zrscan", name, "", "", "", "10000000")
+}
+
+func (pipe *Pipe) Hscan(name string) {
+    pipe.request("hscan", name, "", "", "10000000")
+}
+
+func (pipe *Pipe) send() {
+    for _, v := range pipe.cmds {
+        pipe.ssdb.con.Write([]byte(v))
+    }
+}
+
+func (pipe *Pipe) recv_one() []string {
+    var last byte
+
+    n := len(pipe.recv_buf)
+    for i := 0; i < n; i++ {
+        if last == '\n' && pipe.recv_buf[i] == '\n' {
+            str := parse(pipe.recv_buf[:i+1])
+            pipe.recv_buf = pipe.recv_buf[i+1:]
+            return str
+        }
+
+        last = pipe.recv_buf[i]
+    }
+
+    return nil
+}
+
+func (pipe *Pipe) recieve() []string {
+    for {
+        ret := pipe.recv_one()
+        if ret == nil {
+            var buf [1024]byte
+            n, err := pipe.ssdb.con.Read(buf[0:])
+            if err != nil {
+                return nil
+            }
+            pipe.recv_buf = append(pipe.recv_buf, buf[0:n]...)
+        } else {
+            return ret
+        }
+    }
+    return nil
+}
+
+func (pipe *Pipe) Exec() ([][]string, error) {
+    pipe.send()
+
+    ret := [][]string{}
+
+    for i := 0; i < len(pipe.cmds); i++ {
+        ret = append(ret, pipe.recieve())
+    }
+
+    pipe.cmds = pipe.cmds[:0]
+    return ret, nil
 }
 
 func (ssdb *SSDB) Set(key, value string) error {
@@ -53,6 +159,23 @@ func (ssdb *SSDB) Incr(key string, increment int) error {
 
     if !strings.EqualFold(ret[1], "ok") {
         return errors.New("Internal error, incr failed")
+    }
+
+    return nil
+}
+
+func (ssdb *SSDB) Hincr(name string, key string, increment int) error {
+    if err := ssdb.request("hincr", name, key, strconv.Itoa(increment)); err != nil {
+        return err
+    }
+
+    ret, err := ssdb.recieve()
+    if err != nil {
+        return err
+    }
+
+    if !strings.EqualFold(ret[0], "ok") {
+        return errors.New("Internal error, zincr failed")
     }
 
     return nil
@@ -147,7 +270,7 @@ func (ssdb *SSDB) recieve() ([]string, error) {
 
         result.Write(buf[0:n])
 
-        if bytes.Index(buf[0:], []byte{'\n', '\n'}) != -1 {
+        if bytes.Index(buf[0:n], []byte{'\n', '\n'}) != -1 {
             break
         }
 
@@ -167,7 +290,6 @@ func parse(result []byte) []string {
 
     for i, v := range sl {
         if strings.EqualFold(v, "") {
-            fmt.Println("break")
             break
         }
 
