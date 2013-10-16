@@ -4,6 +4,8 @@
 
 go client for [SSDB](https://github.com/ideawu/ssdb/)
 
+## TODO
+support all commands
 
 ## Usage
 
