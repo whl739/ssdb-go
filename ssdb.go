@@ -31,7 +31,7 @@ func parse(result []byte) []string {
     ret := []string{}
 
     for i, v := range sl {
-        if v == “” {
+        if v == "" {
             break
         }
 
