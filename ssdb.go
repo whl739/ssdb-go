@@ -31,7 +31,7 @@ func parse(result []byte) []string {
     ret := []string{}
 
     for i, v := range sl {
-        if strings.EqualFold(v, "") {
+        if v == “” {
             break
         }
 
@@ -157,13 +157,13 @@ func (ssdb *SSDB) recv_resp(cmd string) (interface{}, error) {
     case "hincr":
         fallthrough
     case "hdecr":
-        fallthrough
-    case "zget":
         if resp[0] == "ok" {
             return nil, nil
         }
         return nil, SsdbError(cmd + " failed")
 
+    case "zget":
+        fallthrough
     case "get":
         fallthrough
     case "hget":
